@@ -12,6 +12,8 @@ from PIL import Image
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_SIDE = 1024
+MAX_SKETCH_SIDE = 256
+INK_THRESHOLD = 128
 
 
 class ImageDecodeError(ValueError):
@@ -46,12 +48,14 @@ def _png_header(data: bytes) -> tuple[int, int, int, int, int]:
     return width, height, bit_depth, colour_type, interlace
 
 
-def decode_grayscale_png(image_id: int, data: bytes) -> DecodedImage:
+def decode_grayscale_png(
+    image_id: int, data: bytes, *, max_side: int = MAX_SIDE
+) -> DecodedImage:
     """Decode and validate one uploaded tile.
 
-    Only non-interlaced, colour-type-0 (grayscale), 8-bit PNGs up to 1024 px per
-    side are accepted.  Dimensions and format are checked both from the raw PNG
-    header and from Pillow's decode result.
+    Only non-interlaced, colour-type-0 (grayscale), 8-bit PNGs up to
+    ``max_side`` pixels per side are accepted.  Dimensions and format are
+    checked both from the raw PNG header and from Pillow's decode result.
     """
     if not data:
         raise ImageDecodeError(f"图 {image_id} 是空文件")
@@ -69,9 +73,9 @@ def decode_grayscale_png(image_id: int, data: bytes) -> DecodedImage:
         raise ImageDecodeError(f"图 {image_id} 使用了隔行扫描，请重新导出为非隔行 PNG")
     if width < 1 or height < 1:
         raise ImageDecodeError(f"图 {image_id} 尺寸为 0")
-    if width > MAX_SIDE or height > MAX_SIDE:
+    if width > max_side or height > max_side:
         raise ImageDecodeError(
-            f"图 {image_id} 尺寸 {width}x{height} 超过每边 {MAX_SIDE} 像素的上限"
+            f"图 {image_id} 尺寸 {width}x{height} 超过每边 {max_side} 像素的上限"
         )
     try:
         with Image.open(io.BytesIO(data)) as im:

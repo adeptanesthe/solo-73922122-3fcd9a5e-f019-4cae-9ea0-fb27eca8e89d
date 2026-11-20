@@ -6,11 +6,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
+from .imaging import MAX_SKETCH_SIDE
+
 MIN_IMAGES = 3
 MAX_IMAGES = 5
 MAX_IMAGE_SIDE = 1024
 MAX_WINDOW_POSITIONS = 81
 MAX_PAIRS = MAX_IMAGES * (MAX_IMAGES - 1) // 2
+
+# Junction check: a small sketch with a handful of ambiguous crossings.
+MAX_CROSSINGS = 12
+MAX_TERMINAL_RECORDS = 256
 
 
 class WindowSpec(BaseModel):
@@ -183,4 +189,87 @@ class AlignResponse(BaseModel):
     )
     search_truncated: bool = Field(
         default=False, description="候选组合数达到搜索上限时为 true，唯一性未获证明"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Junction check
+# ---------------------------------------------------------------------------
+
+
+class PointModel(BaseModel):
+    """An integer pixel coordinate ``(x, y)``; ``0 <= x < 256`` and same for y."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: StrictInt = Field(ge=0, lt=MAX_SKETCH_SIDE)
+    y: StrictInt = Field(ge=0, lt=MAX_SKETCH_SIDE)
+
+
+class TerminalRecordModel(BaseModel):
+    """Two ordinary ink dots and the already-verified continuity between them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    a: PointModel
+    b: PointModel
+    connected: bool = Field(
+        description="两条普通墨点是否导通；true 表示经任意路径连通，false 表示不导通"
+    )
+
+    @model_validator(mode="after")
+    def _check_distinct(self) -> "TerminalRecordModel":
+        if (self.a.x, self.a.y) == (self.b.x, self.b.y):
+            raise ValueError("同一条通断记录的两个墨点不能重合")
+        return self
+
+
+class JunctionSpec(BaseModel):
+    """JSON body for ``POST /junctions``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    crossings: list[PointModel] = Field(
+        default_factory=list,
+        max_length=MAX_CROSSINGS,
+        description="待判定的四向交叉点像素坐标，最多 12 个；为空时只校验通断记录与图是否一致",
+    )
+    terminals: list[TerminalRecordModel] = Field(
+        min_length=1,
+        max_length=MAX_TERMINAL_RECORDS,
+        description="端子对通断记录：每条给出两个普通墨点的坐标与已核实的通断",
+    )
+
+    @model_validator(mode="after")
+    def _check_crossings_distinct(self) -> "JunctionSpec":
+        seen: set[tuple[int, int]] = set()
+        for idx, point in enumerate(self.crossings):
+            key = (point.x, point.y)
+            if key in seen:
+                raise ValueError(f"交叉点 {idx} 的坐标 {key} 与其他交叉点重复")
+            seen.add(key)
+        return self
+
+
+class CrossingVerdictModel(BaseModel):
+    x: int
+    y: int
+    state: Literal["junction", "crossover", "uncertain"] = Field(
+        description=(
+            "junction = 必为接点（四臂全部相接）；"
+            "crossover = 必为跨线（横竖各自直通，交叉处不接）；"
+            "uncertain = 仅凭通断记录仍不能确定，需核对原件"
+        )
+    )
+
+
+class JunctionResponse(BaseModel):
+    status: Literal["resolved", "needs_review", "conflict"]
+    message: str
+    consistent_assignments: int = Field(
+        description="满足全部通断记录的整图接法数量（交叉点两两状态组合）"
+    )
+    crossings: list[CrossingVerdictModel] = Field(
+        default_factory=list,
+        description="status=conflict 时为空；否则与请求中的 crossings 一一对应、同序",
     )
